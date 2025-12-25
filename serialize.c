@@ -9,34 +9,47 @@
 
 // Reads a struct, format of that struct, number of fields in the struct and buffer to write to 
 // Returns size parsed from data buffer
-size_t serialize_struct(void *data, FieldFormat *struct_format, int field_count, uint8_t *buffer) {
+size_t serialize_struct(void *data, int struct_id, uint8_t *buffer) {
     uint8_t *buff_start = buffer;
+    
+    StructType *fmt = &registeredStructs[struct_id];
+    int field_count = fmt->field_count;
+    
 
     for (int i = 0; i < field_count; i++) {
-        void *field = (uint8_t *) data + struct_format[i].offset;
+        void *field = (uint8_t *) data + fmt->fields[i].offset;
+        int array_count = fmt->fields[i].count;
+        
+        switch(fmt->fields[i].type) {
 
-        switch(struct_format[i].type) {
-
-            case F_INT: {
-                memcpy(buffer, field, sizeof(int));
-                buffer += sizeof(int);
+            case F_INT32: {
+                for(int i = 0; i < array_count; i++) {     
+                    memcpy(buffer, field, sizeof(uint32_t));
+                    field += sizeof(uint32_t);
+                    buffer += sizeof(uint32_t);
+                }
                 break;
             }
-            case F_FLOAT: {
-                memcpy(buffer, field, sizeof(float));
-                buffer += sizeof(float);
+            case F_FLOAT32: {
+                for(int i = 0; i < array_count; i++) { 
+                    memcpy(buffer, field, sizeof(uint32_t));
+                    field += sizeof(uint32_t);
+                    buffer += sizeof(uint32_t);
+                }
                 break;
             }
-            case F_ByteStream: {
+            case F_BYTE: {
                 // offset of fields is unknown so assign it to struct 
-                ByteStream str;      
-                memcpy(&str, field, sizeof(str));
-
-                memcpy(buffer, &str.size, sizeof(int));
-                buffer += sizeof(int);
-                
-                memcpy(buffer, str.ptr, str.size);
-                buffer += str.size;
+                for(int i = 0; i < array_count; i++) {     
+                    memcpy(buffer, field, sizeof(uint8_t));
+                    buffer += sizeof(uint8_t);
+                    field += sizeof(uint8_t);
+                }
+                break;
+            }
+            case F_STRUCT: {
+                size_t parsed_size = serialize_struct(field, fmt->fields[i].struct_id, buffer);
+                buffer += parsed_size;
                 break;
             }
         }
@@ -48,39 +61,46 @@ size_t serialize_struct(void *data, FieldFormat *struct_format, int field_count,
 
 // Reads the serialized data, struct format, field count of the struct, and output struct
 // Returns the size parsed from data buffer
-size_t deserialize_struct(uint8_t *data, FieldFormat *struct_format, int field_count, void *output) {
+size_t deserialize_struct(uint8_t *data, int struct_id, void *output_struct) {
     void *field = (uint8_t *) data;
     void *buff_start = field;
 
-    for (int i = 0; i < field_count; i++) {
-        output += struct_format[i].offset;
+    StructType *fmt = &registeredStructs[struct_id];
+    int field_count = fmt->field_count;
 
-        switch(struct_format[i].type) {
+    for (int j = 0; j < field_count; j++) {
+        uint8_t *output = (uint8_t *) output_struct + fmt->fields[j].offset;
+        int array_count = fmt->fields[j].count;
 
-            case F_INT: {
-                memcpy(output, field, sizeof(int));
-                field += sizeof(int);
+        switch(fmt->fields[j].type) {
+
+            case F_INT32: {
+                for(int i = 0; i < array_count; i++) {
+                    memcpy(output, field, sizeof(uint32_t));
+                    output += sizeof(uint32_t);
+                    field += sizeof(uint32_t);
+                }
                 break;
             }
-            case F_FLOAT: {
-                memcpy(output, field, sizeof(float));
-                field += sizeof(float);
+            case F_FLOAT32: {
+                for(int i = 0; i < array_count; i++) {    
+                    memcpy(output, field, sizeof(uint32_t));
+                    output += sizeof(uint32_t);
+                    field += sizeof(uint32_t);
+                }
                 break;
             }
-            case F_ByteStream: {
-                ByteStream str;
-
-                int str_len;
-                memcpy(&str_len, field, sizeof(int));
-                field += sizeof(int);
-
-                str.size = str_len;
-                str.ptr = (uint8_t *) field;   // points to buffer 
-
-                // copy struct to output
-                memcpy(output, &str, sizeof(str));
-
-                field += str_len;
+            case F_BYTE: {
+                for(int i = 0; i < array_count; i++) {    
+                    memcpy(output, field, sizeof(uint8_t));
+                    output += sizeof(uint8_t);
+                    field += sizeof(uint8_t);
+                }
+                break;
+            }
+            case F_STRUCT: {
+                size_t parsed_size = deserialize_struct(field, fmt->fields[j].struct_id, output);
+                field += parsed_size;
                 break;
             }
         }
@@ -90,29 +110,39 @@ size_t deserialize_struct(uint8_t *data, FieldFormat *struct_format, int field_c
     return buff_size;
 }
 
-void readByteStream(ByteStream *source, char *buff) {
-    memcpy(buff, source->ptr, source->size);
-}
+// void readByteStream(ByteStream *source, char *buff) {
+//     memcpy(buff, source->ptr, source->size);
+// }
 
-size_t serializeCalculateSize(void *struct_ptr, FieldFormat *struct_format, int field_count) {
-    size_t size = 0;
+// size_t serializeCalculateSize(void *struct_ptr, FieldFormat *struct_format, int field_count) {
+//     size_t size = 0;
 
-    for (int i = 0; i < field_count; i++) {
-        switch(struct_format[i].type) {
-            case F_INT:
-                size += sizeof(int);
-                break;
+//     for (int i = 0; i < field_count; i++) {
+//         switch(struct_format[i].type) {
+//             case F_INT:
+//                 size += sizeof(int);
+//                 break;
             
-            case F_FLOAT:
-                size += sizeof(float);
-                break;
-            case F_ByteStream:
-                size += sizeof(int);
-                int data_size = *(int *) (struct_ptr + struct_format[i].offset);
-                size += data_size;
-                break;
-        }
-    }
+//             case F_FLOAT:
+//                 size += sizeof(float);
+//                 break;
+//             case F_ByteStream:
+//                 size += sizeof(int);
+//                 int data_size = *(int *) (struct_ptr + struct_format[i].offset);
+//                 size += data_size;
+//                 break;
+//         }
+//     }
 
-    return size;
+//     return size;
+// }
+
+
+int struct_register(int struct_id, FieldDesc *struct_desc, int field_count) {
+    static int id = 0;
+    if (struct_id < id)
+        return -1;
+    
+    registeredStructs[id++] = (StructType) { id, struct_desc, field_count };
+    return 0;
 }
